@@ -140,8 +140,15 @@ export function secret<T = unknown>(backend: string, path: string): T {
   return { $secret: { backend, path } } as unknown as T;
 }
 
+/** CrossMarker is a union of $cross's two mutually exclusive real wire
+ * shapes (core/resolver/refs.go's own resolveCross accepts exactly one
+ * of ledger_dir/stack, never both) -- an explicit ledger_dir path, or a
+ * stack resolved by NAME against the base store (UBI-32 Arc B,
+ * docs/architecture.md -- Addressing). */
 export interface CrossMarker {
-  readonly $cross: { readonly ledger_dir: string; readonly to: string };
+  readonly $cross:
+    | { readonly ledger_dir: string; readonly to: string }
+    | { readonly stack: string; readonly to: string };
 }
 
 /** cross(ledgerDir, address) builds the exact {"$cross": {"ledger_dir",
@@ -150,6 +157,18 @@ export interface CrossMarker {
  * cross-stack handle is real, useful, deferred future work). */
 export function cross<T = unknown>(ledgerDir: string, address: string): T {
   return { $cross: { ledger_dir: ledgerDir, to: address } } as unknown as T;
+}
+
+/** crossStack(stack, address) builds the exact {"$cross": {"stack",
+ * "to"}} marker (UBI-32 Arc B's own "resolve by NAME against the
+ * base") -- the form UBI-134's own blueprint cross_ref params need: a
+ * blueprint is built once and called from many different stacks/
+ * environments, so a call-site "@<stack>.<type>.<name>" reference
+ * (matching diagram/crossref.go's own "@" grammar for a reference
+ * node's label) can only ever name a neighbor by stack, never by a
+ * ledger_dir path the blueprint has no way to know at build time. */
+export function crossStack<T = unknown>(stack: string, address: string): T {
+  return { $cross: { stack, to: address } } as unknown as T;
 }
 
 function isSecretMarker(v: unknown): v is SecretMarker {
