@@ -1,0 +1,173 @@
+name: publish
+
+# Manual-trigger only, matching every ubx-sdk-* repo's own publish.yml
+# convention (UBI-135): someone clicks "Run workflow" here to actually
+# publish; the workflow still computes the correct version decision
+# automatically -- the human step is a confirmation click, not a manual
+# version decision.
+#
+# UBI-143: this is the FIRST real automated publish path this repo has
+# ever had -- @ubx/sdk's current JSR version (0.1.2) was published by
+# hand in a past session, and npm has never carried real content at all
+# (registry.npmjs.org's own @ubx/sdk@0.0.1 is a deliberate placeholder,
+# "see jsr.io/@ubx/sdk for the real package"). This workflow publishes
+# to npm ONLY -- JSR stays exactly as it is, a separate, still-manual
+# process, untouched here. All six ubx-sdk-<provider> repos' own npm
+# migration depends on this resolving: every one of them declares a
+# real `@ubx/sdk` npm dependency (never vendored), so this repo's own
+# first successful publish is a hard prerequisite for any of theirs.
+#
+# Single-file, single-registry, no per-language exports map and no
+# PyPI/Go leg -- unlike the per-provider repos, this package has no
+# Python or Go counterpart of its own (those are separate runtimes:
+# github.com/Ubiquex/ubx-sdk-go, github.com/Ubiquex/ubx-sdk-python).
+# runtime/src/index.ts is self-contained (zero external imports), so
+# the build step here needs no dependency-resolution step either.
+#
+# evaluator/guards.ts is deliberately NEVER part of what gets built or
+# published -- it's embedded directly into the `ubx` Go binary
+# (embed.go), not something a program author imports (see this repo's
+# own README, "Two real roles, one source").
+#
+# Requires an NPM_TOKEN repo secret (Settings -> Secrets and variables
+# -> Actions).
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out ubx-sdk-typescript
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Determine version to publish
+        id: bump
+        run: |
+          set -euo pipefail
+          committed="$(python3 -c "import json; print(json.load(open('package.json'))['version'])")"
+
+          # Real, live npm state -- never trust the committed version
+          # alone (registry.npmjs.org's own @ubx/sdk@0.0.1 placeholder
+          # would otherwise look like a real prior release to bump off
+          # of).
+          live_npm="$(curl -sf https://registry.npmjs.org/@ubx%2fsdk | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('dist-tags',{}).get('latest') or '')" || echo "")"
+          echo "committed=$committed, live npm=${live_npm:-<none>}"
+
+          if [ -z "$live_npm" ]; then
+            new_version="$committed"
+            echo "no live npm entry yet -- publishing committed version ($committed) as-is"
+          elif [ "$committed" != "$live_npm" ] && [ "$(printf '%s\n%s\n' "$committed" "$live_npm" | sort -V | tail -1)" = "$committed" ]; then
+            # Covers the real placeholder case too: committed (0.1.2)
+            # is ahead of live (0.0.1), so this takes the "publish
+            # as-is" branch on the very first real run -- the
+            # placeholder is real npm state, just not real CONTENT, so
+            # it must still be compared against, never skipped.
+            new_version="$committed"
+            echo "committed version ($committed) already ahead of live ($live_npm) -- publishing as-is"
+          else
+            # Routine bump off an existing real release -- PATCH only;
+            # this package has no per-file MINOR-vs-PATCH signal the
+            # way a generated provider repo does (new resource files
+            # added since a tag), so every routine bump here is PATCH,
+            # a MINOR/major bump stays a deliberate, committed decision
+            # made by hand in package.json before running this.
+            IFS='.' read -r major minor patch <<< "$live_npm"
+            new_version="${major}.${minor}.$((patch + 1))"
+            echo "live=$live_npm -> $new_version"
+          fi
+          echo "new_version=$new_version" >> "$GITHUB_OUTPUT"
+
+      - name: Bump version in package.json
+        run: |
+          set -euo pipefail
+          v="${{ steps.bump.outputs.new_version }}"
+          python3 -c "
+          import json
+          d = json.load(open('package.json'))
+          d['version'] = '$v'
+          json.dump(d, open('package.json', 'w'), indent=2)
+          open('package.json', 'a').write('\n')
+          "
+
+      - name: Build
+        run: |
+          set -euo pipefail
+          cat > tsconfig.npm-build.json <<'TSCONFIG'
+          {
+            "compilerOptions": {
+              "target": "ES2022",
+              "module": "ES2022",
+              "moduleResolution": "bundler",
+              "declaration": true,
+              "isolatedDeclarations": true,
+              "isolatedModules": true,
+              "skipLibCheck": true,
+              "strict": true,
+              "outDir": "dist",
+              "rootDir": "runtime/src"
+            },
+            "include": ["runtime/src/index.ts"]
+          }
+          TSCONFIG
+          npx --yes typescript@7.0.2 --project tsconfig.npm-build.json
+          rm tsconfig.npm-build.json
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Commit version bump
+        # Deliberately runs LAST, after npm has already succeeded --
+        # same discipline as every ubx-sdk-<provider> repo's own
+        # publish.yml (UBI-143): a failed publish must never leave main
+        # claiming a version that does not exist on the registry.
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- package.json; then
+            echo "already at ${{ steps.bump.outputs.new_version }} -- nothing to commit"
+          else
+            git config user.name "ubx-bot"
+            git config user.email "actions@users.noreply.github.com"
+            git add package.json
+            git commit -m "runtime: bump @ubx/sdk to v${{ steps.bump.outputs.new_version }}"
+            git push origin main
+          fi
+
+      - name: Verify npm agrees
+        # Queries the SPECIFIC version, never dist-tags.latest -- a
+        # dist-tag can lag behind the real per-version publish, the
+        # same real false-negative already found and fixed for the six
+        # provider repos' own verify step this session.
+        run: |
+          set -euo pipefail
+          v="${{ steps.bump.outputs.new_version }}"
+          live_npm=""
+          for attempt in $(seq 1 10); do
+            live_npm="$(curl -sf "https://registry.npmjs.org/@ubx%2fsdk/$v" | python3 -c "import json,sys; print(json.load(sys.stdin).get('version') or '')" || echo "")"
+            if [ "$live_npm" = "$v" ]; then
+              break
+            fi
+            echo "attempt $attempt: npm=${live_npm:-<none>}, expected $v -- retrying in 10s"
+            sleep 10
+          done
+          echo "final: npm=${live_npm:-<none>}, expected $v"
+          if [ "$live_npm" != "$v" ]; then
+            echo "npm does not yet show $v -- investigate directly rather than re-running blindly" >&2
+            exit 1
+          fi
+          echo "npm agrees at $v"
