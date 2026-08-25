@@ -9,6 +9,7 @@ import {
   addressOf,
   ComputedCoercionError,
   cross,
+  data,
   intent,
   isComputed,
   override,
@@ -17,6 +18,7 @@ import {
   resource,
   secret,
   stack,
+  type DataSourceBinding,
   type FieldMap,
   type ResourceBinding,
 } from "./index.ts";
@@ -61,6 +63,18 @@ interface MirrorAttrs {
 const Mirror: ResourceBinding<MirrorConfig, MirrorAttrs> = {
   wireType: "fake_mirror",
   fields: { targetId: "target_id" },
+};
+
+interface DataWidgetLookup {
+  widgetId?: string;
+}
+interface DataWidgetAttrs {
+  id: string;
+  name: string;
+}
+const DataWidget: DataSourceBinding<DataWidgetLookup, DataWidgetAttrs> = {
+  wireType: "data_fake_widget",
+  fields: { widgetId: "id" },
 };
 
 Deno.test("stack/resource/intent -- basic document shape", () => {
@@ -379,4 +393,80 @@ Deno.test("the innermost pushBlueprintSource scope wins when nested", () => {
 
 Deno.test("popBlueprintSource with no matching pushBlueprintSource throws", () => {
   assertThrows(() => popBlueprintSource(), Error, "no matching pushBlueprintSource");
+});
+
+// --- data() -- mirrors the resource() tests above exactly (same
+// duplicate-address check, same marker-aware serializer, same
+// blueprint-provenance wiring) rather than a separate, narrower suite,
+// since addDataSource's own doc comment states it reuses those same
+// mechanisms unchanged.
+
+Deno.test("stack/data/intent -- basic data_sources document shape", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "look up an existing widget" });
+    data(DataWidget, "existing", { widgetId: "w-123" });
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.data_sources?.length, 1);
+  assertEquals(doc.data_sources?.[0], {
+    type: "data_fake_widget",
+    name: "existing",
+    lookup: { id: "w-123" },
+  });
+  assert(!("op" in (doc.data_sources?.[0] as object)), "data_sources[] entry must not carry an op field");
+});
+
+Deno.test("no data() calls -- \"data_sources\" is entirely absent from the wire document", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "s" });
+    resource(Widget, "primary", { name: "primary-widget" });
+  });
+
+  const doc = def.evaluate();
+  assert(!("data_sources" in doc), "data_sources must be entirely absent when data() was never called");
+});
+
+Deno.test("data() returns a Computed<T> handle; passing it into a sibling resource's config emits $ref", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "s" });
+    const looked = data(DataWidget, "existing", { widgetId: "w-123" });
+    resource(Mirror, "copy", { targetId: looked.name as unknown as string });
+  });
+
+  const doc = def.evaluate();
+  const mirror = doc.resources.find((r) => r.type === "fake_mirror");
+  assertEquals(mirror?.config, { target_id: { $ref: { to: "payments.data_fake_widget.existing.name" } } });
+});
+
+Deno.test("a resource's own Computed<T> feeds a data source's lookup, the reverse direction", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "s" });
+    const primary = resource(Widget, "primary", { name: "primary-widget" });
+    data(DataWidget, "lookup-created", { widgetId: primary.id as unknown as string });
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.data_sources?.[0].lookup, { id: { $ref: { to: "payments.fake_widget.primary.id" } } });
+});
+
+Deno.test("duplicate data source name in the same stack throws", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "s" });
+    data(DataWidget, "existing", { widgetId: "1" });
+    data(DataWidget, "existing", { widgetId: "2" });
+  });
+  assertThrows(() => def.evaluate(), Error, "duplicate data source");
+});
+
+Deno.test("data() with an empty name throws", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "s" });
+    data(DataWidget, "", { widgetId: "1" });
+  });
+  assertThrows(() => def.evaluate(), Error, "name is required");
+});
+
+Deno.test("data() called outside an active stack() evaluation throws", () => {
+  assertThrows(() => data(DataWidget, "existing", { widgetId: "1" }), Error, "called outside of an active stack");
 });

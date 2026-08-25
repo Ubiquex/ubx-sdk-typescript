@@ -220,6 +220,26 @@ export interface ResourceBinding<TConfig = unknown, TAttrs = unknown> {
   readonly __attrs?: TAttrs;
 }
 
+/** DataSourceBinding is ResourceBinding's own real sibling for a data
+ * source (e.g. `AwsDataEc2Instance`) -- structurally identical
+ * (wireType for data_sources[].type, fields for lookup-key ->
+ * wire-name mapping, the same role fields plays for a resource's own
+ * config), a distinct interface rather than a reused ResourceBinding
+ * only so a codegen'd module can never pass a resource's own binding
+ * to data() or vice versa by accident -- TypeScript catches that at the
+ * call site instead of it becoming a runtime address-shape bug
+ * (docs/schema.md's own "Amendment: data sources" -- wireType is
+ * expected to already carry the real "data_"-prefixed convention that
+ * section pins, this type does not prepend it itself). TLookup/TAttrs
+ * are phantom, type-only, the same posture ResourceBinding's own
+ * __config/__attrs already have. */
+export interface DataSourceBinding<TLookup = unknown, TAttrs = unknown> {
+  readonly wireType: string;
+  readonly fields: FieldMap;
+  readonly __lookup?: TLookup;
+  readonly __attrs?: TAttrs;
+}
+
 // ---------------------------------------------------------------------
 // intent/v1 document shape (docs/schema.md's own `ubx:intent/v1`) --
 // only the fields this runtime actually populates; resources[].config
@@ -248,6 +268,17 @@ export interface IntentDocument {
     readonly config: unknown;
     readonly sources?: readonly IntentSource[];
   }>;
+  // data_sources is optional (omitted, never an empty array, when
+  // data() was never called) -- docs/schema.md's own "Amendment: data
+  // sources" -- a sibling array to resources[], never a variant of it:
+  // there is no "op" field on an entry here at all, since this array
+  // itself is the discriminator (always a read, never a create/modify).
+  readonly data_sources?: ReadonlyArray<{
+    readonly type: string;
+    readonly name: string;
+    readonly lookup: unknown;
+    readonly sources?: readonly IntentSource[];
+  }>;
   readonly overrides?: ReadonlyArray<{
     readonly address: string;
     readonly config: Record<string, unknown>;
@@ -273,6 +304,7 @@ export interface StackDefinition {
 class Collector {
   readonly stackName: string;
   private resources: IntentDocument["resources"][number][] = [];
+  private dataSources: NonNullable<IntentDocument["data_sources"]>[number][] = [];
   private overrides: NonNullable<IntentDocument["overrides"]>[number][] = [];
   private seenAddresses = new Set<string>();
   private intentInfo: IntentDocument["intent"] | undefined;
@@ -328,6 +360,41 @@ class Collector {
     return makeComputed(address) as Computed<TAttrs>;
   }
 
+  /** addDataSource is addResource's own real sibling for data() -- same
+   * duplicate-address check (the identical shared seenAddresses set, so
+   * a resource and a data source can never collide with each other
+   * either, though in practice they never do: DataSourceBinding.wireType
+   * always carries the real "data_" prefix docs/schema.md's own
+   * amendment pins, so the two address spaces never actually overlap),
+   * same blueprint-provenance wiring, same serializeConfig walk
+   * (identical call, not a reimplementation -- a lookup value gets the
+   * exact same $ref/$secret/$cross marker recognition a resource's own
+   * config already gets, docs/schema.md's own "data_sources[].lookup"
+   * bullet). The one real difference from addResource: no "op" field on
+   * the built entry at all (IntentDocument["data_sources"]'s own doc
+   * comment has why) and it pushes onto this.dataSources, a separate
+   * array, never this.resources. */
+  addDataSource<TAttrs>(binding: DataSourceBinding<unknown, TAttrs>, name: string, lookup: unknown): Computed<TAttrs> {
+    if (!name || name.trim() === "") {
+      throw new Error(`data(): name is required (type ${binding.wireType}).`);
+    }
+    const address = `${this.stackName}.${binding.wireType}.${name}`;
+    if (this.seenAddresses.has(address)) {
+      throw new Error(`data(): duplicate data source ${binding.wireType} "${name}" in stack "${this.stackName}".`);
+    }
+    this.seenAddresses.add(address);
+
+    const serialized = serializeConfig(binding.fields, lookup, address);
+    const base = { type: binding.wireType, name, lookup: serialized };
+    if (blueprintSourceStack.length > 0) {
+      this.dataSources.push({ ...base, sources: [{ kind: "blueprint", ref: blueprintSourceStack[blueprintSourceStack.length - 1] }] });
+    } else {
+      this.dataSources.push(base);
+    }
+
+    return makeComputed(address) as Computed<TAttrs>;
+  }
+
   addOverride(address: string, config: Record<string, unknown>): void {
     if (!address || address.trim() === "") {
       throw new Error("override(): address is required.");
@@ -348,15 +415,18 @@ class Collector {
         "stack(): intent() was never called -- a missing summary is a collection-time hard failure, matching resources[].op's own \"always explicit, never inferred\" discipline.",
       );
     }
-    const doc: IntentDocument = {
+    let doc: IntentDocument = {
       schema_version: 1,
       kind: "ubx:intent/v1",
       stack: this.stackName,
       intent: this.intentInfo,
       resources: this.resources,
     };
+    if (this.dataSources.length > 0) {
+      doc = { ...doc, data_sources: this.dataSources };
+    }
     if (this.overrides.length > 0) {
-      return { ...doc, overrides: this.overrides };
+      doc = { ...doc, overrides: this.overrides };
     }
     return doc;
   }
@@ -409,6 +479,20 @@ export function resource<TConfig, TAttrs>(
   config: TConfig,
 ): Computed<TAttrs> {
   return requireCollector("resource").addResource(binding, name, config);
+}
+
+/** data(binding, name, lookup) declares one data source -- a lookup,
+ * never a create/modify (docs/schema.md's own "Amendment: data
+ * sources"). Returns the identical Computed<TAttrs> handle resource()
+ * returns, on purpose: a data source's own result wires into a sibling
+ * resource's config exactly the way another resource's own output
+ * would, no separate reference type or API for a caller to learn. */
+export function data<TLookup, TAttrs>(
+  binding: DataSourceBinding<TLookup, TAttrs>,
+  name: string,
+  lookup: TLookup,
+): Computed<TAttrs> {
+  return requireCollector("data").addDataSource(binding, name, lookup);
 }
 
 /** intent({summary, sources}) populates the emitted document's own
