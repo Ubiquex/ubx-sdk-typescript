@@ -1,6 +1,6 @@
 {
   "name": "@ubx/sdk",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "license": "Apache-2.0",
   "description": "The describe-only TypeScript runtime for Ubiquex SDK programs.",
   "type": "module",
