@@ -6,16 +6,19 @@ name: publish
 # automatically -- the human step is a confirmation click, not a manual
 # version decision.
 #
-# UBI-143: this is the FIRST real automated publish path this repo has
-# ever had -- @ubx/sdk's current JSR version (0.1.2) was published by
-# hand in a past session, and npm has never carried real content at all
-# (registry.npmjs.org's own @ubx/sdk@0.0.1 is a deliberate placeholder,
-# "see jsr.io/@ubx/sdk for the real package"). This workflow publishes
-# to npm ONLY -- JSR stays exactly as it is, a separate, still-manual
-# process, untouched here. All six ubx-sdk-<provider> repos' own npm
-# migration depends on this resolving: every one of them declares a
-# real `@ubx/sdk` npm dependency (never vendored), so this repo's own
-# first successful publish is a hard prerequisite for any of theirs.
+# UBI-143: this repo's first real automated publish ran 2026-08-27 --
+# npm now carries real, current content (`@ubx/sdk@1.0.1`, confirmed
+# against the live registry). Before that run, npm had only ever held a
+# placeholder (`@ubx/sdk@0.0.1`, "see jsr.io/@ubx/sdk for the real
+# package") while JSR (`0.1.2`) carried the real, but separately
+# published-by-hand, content -- a stale version of this same comment
+# describing npm as still-a-placeholder is what sent UBI-196 down the
+# wrong path checking `deno check` failures against JSR before finding
+# npm was already real. JSR itself is untouched by this workflow and
+# stays a separate, still-manual process -- the six ubx-sdk-<provider>
+# repos' own deno.json import maps have migrated from `jsr:@ubx/sdk` to
+# `npm:@ubx/sdk`, matching what each one's package.json already
+# declared as its real npm dependency.
 #
 # Single-file, single-registry, no per-language exports map and no
 # PyPI/Go leg -- unlike the per-provider repos, this package has no
