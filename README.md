@@ -20,6 +20,24 @@ hermetic evaluator installs before running a program (`Date.now`,
 `Math.random`, network/filesystem access, ...) -- not something a
 program author imports directly.
 
+## What it contains
+
+- `runtime/src/`: the real runtime, `stack`, `resource`, `intent`, `secret`
+- `evaluator/guards.ts`: the nondeterminism guard set, installed by
+  `ubx`'s own hermetic evaluator, not imported by a program directly
+- `embed.go`: the real `go:embed` bridge `ubiquex` uses to compile this
+  repo's own TypeScript directly into the `ubx` binary
+
+## Install
+
+```
+deno add jsr:@ubx/sdk
+```
+
+Independent convenience for editor/IDE type-checking. Not required for
+evaluation to work, `ubx`'s own hermetic evaluator embeds this repo
+directly and never fetches the published package.
+
 ## Two real roles, one source (UBI-139)
 
 This repo is the canonical source for both:
@@ -47,3 +65,11 @@ See [docs.ubiquex.io](https://docs.ubiquex.io) for the full SDK guide.
 ## License
 
 Apache-2.0
+
+<!-- README-GEN:BEGIN -->
+## Links
+
+- Docs: https://docs.ubiquex.io
+- Internals (architecture and design): https://github.com/Ubiquex/ubiquex-internals
+- Linear board: https://linear.app/ubiquex
+<!-- README-GEN:END -->
