@@ -34,6 +34,12 @@ name: publish
 #
 # Requires an NPM_TOKEN repo secret (Settings -> Secrets and variables
 # -> Actions).
+#
+# UBI-225: the version-bump step opens a PR rather than pushing to main
+# directly -- main is branch-protected (UBI-216), so a direct push
+# always fails with GH006 (confirmed live: the 2026-09-01 dispatch
+# published v1.0.2 to npm correctly, then failed on exactly this step).
+# Never self-merged.
 
 on:
   workflow_dispatch: {}
@@ -41,6 +47,7 @@ on:
 permissions:
   contents: write
   id-token: write
+  pull-requests: write
 
 jobs:
   publish:
@@ -134,21 +141,36 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Commit version bump
+      - name: Open a PR for the version bump
         # Deliberately runs LAST, after npm has already succeeded --
         # same discipline as every ubx-sdk-<provider> repo's own
         # publish.yml (UBI-143): a failed publish must never leave main
         # claiming a version that does not exist on the registry.
+        #
+        # UBI-225: opens a PR rather than pushing to main directly --
+        # main is branch-protected (UBI-216), so a direct push here
+        # always fails. npm already has the real content by the time
+        # this runs, so a human merging the bump PR late costs nothing
+        # but a brief window where npm is ahead of what main claims,
+        # never the other way around. Never self-merged.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if git diff --quiet -- package.json; then
             echo "already at ${{ steps.bump.outputs.new_version }} -- nothing to commit"
           else
+            v="${{ steps.bump.outputs.new_version }}"
+            branch="version-bump/v$v"
             git config user.name "ubx-bot"
             git config user.email "actions@users.noreply.github.com"
+            git checkout -b "$branch"
             git add package.json
-            git commit -m "runtime: bump @ubx/sdk to v${{ steps.bump.outputs.new_version }}"
-            git push origin main
+            git commit -m "runtime: bump @ubx/sdk to v$v"
+            git push origin "$branch"
+            gh pr create --title "runtime: bump @ubx/sdk to v$v" \
+              --body "npm already has v$v (this workflow only opens this PR after the real publish above succeeds). Merging this brings main's own committed package.json in line with what is already published." \
+              --base main --head "$branch"
           fi
 
       - name: Verify npm agrees
