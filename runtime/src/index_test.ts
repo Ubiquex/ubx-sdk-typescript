@@ -395,6 +395,46 @@ Deno.test("popBlueprintSource with no matching pushBlueprintSource throws", () =
   assertThrows(() => popBlueprintSource(), Error, "no matching pushBlueprintSource");
 });
 
+// --- blueprintName on the binding itself (UBI-225) ---
+
+const BlueprintWidget: ResourceBinding<WidgetConfig, WidgetAttrs> = {
+  wireType: "fake_widget",
+  fields: widgetFields,
+  blueprintName: "ci-platform",
+};
+
+Deno.test("resource() against a binding carrying blueprintName stamps provenance with no open scope", () => {
+  const def = stack("platform", () => {
+    intent({ summary: "s" });
+    resource(BlueprintWidget, "bypass", { name: "x" });
+  });
+  const doc = def.evaluate();
+  assertEquals(doc.resources[0].sources, [{ kind: "blueprint", ref: "ci-platform" }]);
+});
+
+Deno.test("resource() against an ordinary binding (no blueprintName) still has no sources", () => {
+  const def = stack("platform", () => {
+    intent({ summary: "s" });
+    resource(Widget, "primary", { name: "x" });
+  });
+  const doc = def.evaluate();
+  assert(!("sources" in doc.resources[0]));
+});
+
+Deno.test("an open pushBlueprintSource scope wins over the binding's own blueprintName", () => {
+  const def = stack("platform", () => {
+    intent({ summary: "s" });
+    pushBlueprintSource("outer-blueprint");
+    try {
+      resource(BlueprintWidget, "nested", { name: "x" });
+    } finally {
+      popBlueprintSource();
+    }
+  });
+  const doc = def.evaluate();
+  assertEquals(doc.resources[0].sources, [{ kind: "blueprint", ref: "outer-blueprint" }]);
+});
+
 // --- data() -- mirrors the resource() tests above exactly (same
 // duplicate-address check, same marker-aware serializer, same
 // blueprint-provenance wiring) rather than a separate, narrower suite,

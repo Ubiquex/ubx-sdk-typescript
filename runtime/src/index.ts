@@ -207,10 +207,26 @@ export type FieldMap = Record<string, FieldSpec>;
  * (e.g. `AwsDbInstance`) -- wireType for resources[].type, fields for
  * config-key -> wire-name mapping at evaluation time. TConfig/TAttrs are
  * type-only (never read at runtime) -- they're what give resource()'s
- * own generic signature real type inference. */
+ * own generic signature real type inference.
+ *
+ * blueprintName (UBI-225) is undefined for an ordinary provider SDK
+ * binding (sdk/codegen/templates/ts never sets it) -- set only by a
+ * blueprint's own generated bindings.ts (blueprint/tsgen.go's own
+ * renderTSBindings), to that blueprint's own bare declared name, the
+ * SAME value its generated wrapper function passes to
+ * pushBlueprintSource. This is provenance carried on the binding
+ * itself, not just on the call scope: before this field existed, a
+ * resource built by calling resource(someBlueprintBinding, name,
+ * someConfig) directly -- importing a blueprint's own exported
+ * binding/config and constructing the resource by hand, never calling
+ * the blueprint's own wrapper function at all -- got zero provenance,
+ * indistinguishable from an ordinary hand-written resource. addResource
+ * below checks this field as a fallback exactly when
+ * blueprintSourceStack is empty. */
 export interface ResourceBinding<TConfig = unknown, TAttrs = unknown> {
   readonly wireType: string;
   readonly fields: FieldMap;
+  readonly blueprintName?: string;
   // Phantom, type-only -- never assigned, never read; TypeScript infers
   // TConfig/TAttrs from a binding literal's own declared type
   // (sdk/codegen/templates/ts's `ResourceBinding<XConfig, XAttrs>`
@@ -338,21 +354,17 @@ class Collector {
     this.seenAddresses.add(address);
 
     const serialized = serializeConfig(binding.fields, config, address);
-    // UBI-126: this resource() call may be executing from inside a
-    // compiled blueprint's own generated function body
-    // (pushBlueprintSource, below, called only by ubx blueprint build's
-    // own generated code -- never by a stack author directly). The
-    // innermost (most recently pushed) scope wins, matching ordinary
-    // lexical-scoping intuition. ref is deliberately the blueprint's own
-    // bare declared name here, NOT yet "name:content_hash" -- this
-    // sandboxed evaluator has no way to compute a real content hash for
-    // itself (see pushBlueprintSource's own doc comment) -- ubx resolve's
-    // own external StampDirectCallProvenanceTS step (blueprint package)
+    // UBI-126/UBI-225: ref is deliberately the blueprint's own bare
+    // declared name here, NOT yet "name:content_hash" -- this sandboxed
+    // evaluator has no way to compute a real content hash for itself
+    // (see pushBlueprintSource's own doc comment) -- ubx resolve's own
+    // external StampDirectCallProvenanceTS step (blueprint package)
     // resolves the bare name to a real content hash afterward, mirroring
     // sdk/go/runtime's own identical mechanism.
     const base = { type: binding.wireType, name, op: "create" as const, config: serialized };
-    if (blueprintSourceStack.length > 0) {
-      this.resources.push({ ...base, sources: [{ kind: "blueprint", ref: blueprintSourceStack[blueprintSourceStack.length - 1] }] });
+    const blueprintSource = currentBlueprintSource(binding);
+    if (blueprintSource !== undefined) {
+      this.resources.push({ ...base, sources: [{ kind: "blueprint", ref: blueprintSource }] });
     } else {
       this.resources.push(base);
     }
@@ -529,12 +541,34 @@ export function override(address: string, config: Record<string, unknown>): void
 // (blueprint/tsgen.go's own renderTSFunction) wraps its entire body in,
 // using the blueprint's own bare, unsanitized declared name. A plain
 // stack that never imports a blueprint never pushes anything, so this
-// stack stays empty and a resource's own `sources` stays unset -- zero
-// wire-format change for the overwhelming majority of ordinary SDK
-// programs.
+// stack stays empty and a resource's own `sources` stays unset unless
+// the binding itself carries a blueprintName (currentBlueprintSource
+// below) -- zero wire-format change for the overwhelming majority of
+// ordinary SDK programs.
 // ---------------------------------------------------------------------
 
 let blueprintSourceStack: string[] = [];
+
+/** currentBlueprintSource (UBI-225) is what addResource actually
+ * checks: the innermost active pushBlueprintSource scope if one is
+ * open, or -- exactly when it isn't -- the binding's own carried
+ * blueprintName. In every case ubx blueprint build's own generated code
+ * produces, the two never disagree: a wrapper function's own
+ * resource() calls run against that SAME blueprint's own bindings, both
+ * stamped with the identical name by the same codegen run, so which one
+ * wins is only ever load-bearing for the one case this field exists to
+ * fix -- a binding used OUTSIDE any open scope at all (no wrapper
+ * function call), where the scope check alone would find nothing and
+ * the binding is the only signal left. Returns undefined (no
+ * provenance) for an ordinary resource: no open scope, and a binding
+ * with no blueprintName -- the overwhelming common case, completely
+ * unaffected. */
+function currentBlueprintSource(binding: ResourceBinding<unknown, unknown>): string | undefined {
+  if (blueprintSourceStack.length > 0) {
+    return blueprintSourceStack[blueprintSourceStack.length - 1];
+  }
+  return binding.blueprintName;
+}
 
 /** pushBlueprintSource marks every resource() call for the duration of
  * the current scope (until the matching popBlueprintSource) as produced
