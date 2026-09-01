@@ -1,0 +1,41 @@
+name: ci
+
+# runtime/ and evaluator/ each already define their own real test/check
+# tasks (deno.json's own "tasks" field) -- run those directly rather
+# than reinventing a parallel command.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: deno task check (runtime)
+        run: deno task check
+        working-directory: runtime
+
+      - name: deno task test (runtime)
+        run: deno task test
+        working-directory: runtime
+
+      - name: deno task check (evaluator)
+        run: deno task check
+        working-directory: evaluator
+
+      - name: deno task test (evaluator)
+        run: deno task test
+        working-directory: evaluator
