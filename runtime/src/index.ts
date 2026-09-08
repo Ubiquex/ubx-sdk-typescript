@@ -668,6 +668,26 @@ function serializeConfig(fields: FieldMap, value: unknown, addressForErrors: str
   }
   const out: Record<string, unknown> = {};
   for (const [idiomaticKey, raw] of Object.entries(value as Record<string, unknown>)) {
+    // undefined means "not set", so the key is omitted entirely -- the
+    // same answer Go and Python already give.
+    //
+    // Object.entries() keeps a key that was explicitly written as
+    // undefined, unlike a key that was never written at all, so without
+    // this the two differ: `{ deadLetter: undefined }` serialized as
+    // `"dead_letter": null` while omitting the key serialized as
+    // nothing. Go's serializeConfig skips a nil interface field
+    // ("not set -- omitted") and Python's skips `raw is None`, so
+    // TypeScript was the only runtime turning "not set" into an explicit
+    // null, and two semantically identical programs produced different
+    // intent/v1 and therefore different proposal hashes.
+    //
+    // An explicit `null` still serializes as null and is unaffected.
+    // That remains the only way to say "set this field to null" in any
+    // of the three runtimes, since Go and Python cannot express it at a
+    // config field at all: there, nil/None already mean omitted.
+    if (raw === undefined) {
+      continue;
+    }
     const spec = fields[idiomaticKey];
     if (spec === undefined) {
       throw new TypeError(`resource "${addressForErrors}": unrecognized config field "${idiomaticKey}" -- not present in this resource type's own generated binding.`);

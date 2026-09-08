@@ -510,3 +510,52 @@ Deno.test("data() with an empty name throws", () => {
 Deno.test("data() called outside an active stack() evaluation throws", () => {
   assertThrows(() => data(DataWidget, "existing", { widgetId: "1" }), Error, "called outside of an active stack");
 });
+
+// undefined means "not set" and is omitted, matching Go and Python.
+//
+// Object.entries() keeps a key explicitly written as undefined, unlike a
+// key never written, so before this the two produced different documents:
+// `{ tags: undefined }` serialized as `"tags": null` while omitting the
+// key serialized as nothing. Go's serializeConfig skips a nil interface
+// field and Python's skips `raw is None`, so TypeScript was the only
+// runtime turning "not set" into an explicit null, which meant two
+// semantically identical programs across languages produced different
+// intent/v1 and therefore different proposal hashes.
+Deno.test("a config field set to undefined is omitted, not serialized as null", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "undefined is not a value" });
+    resource(Widget, "primary", { name: "n", tags: undefined } as unknown as WidgetConfig);
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.resources[0].config, { name: "n" });
+});
+
+// An explicit null still means null. It is the only way to say "set this
+// field to null" in any of the three runtimes, since Go and Python cannot
+// express it at a config field at all: there, nil and None already mean
+// omitted. Distinguishing it from undefined is the whole point.
+Deno.test("a config field set to an explicit null still serializes as null", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "null is a value" });
+    resource(Widget, "primary", { name: "n", tags: null } as unknown as WidgetConfig);
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.resources[0].config, { name: "n", tags: null });
+});
+
+// Nested objects go through the same serializeConfig, so the rule has to
+// hold one level down too.
+Deno.test("undefined inside a nested object field is omitted as well", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "nested" });
+    resource(Widget, "primary", {
+      name: "n",
+      settings: { enabled: undefined },
+    } as unknown as WidgetConfig);
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.resources[0].config, { name: "n", settings: {} });
+});
