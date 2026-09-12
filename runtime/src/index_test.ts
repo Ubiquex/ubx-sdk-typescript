@@ -7,6 +7,7 @@
 
 import {
   addressOf,
+  blueprintOutputs,
   ComputedCoercionError,
   cross,
   data,
@@ -558,4 +559,61 @@ Deno.test("undefined inside a nested object field is omitted as well", () => {
 
   const doc = def.evaluate();
   assertEquals(doc.resources[0].config, { name: "n", settings: {} });
+});
+
+// UBI-261: a blueprint caller reports what the blueprint returned,
+// because the address an output refers to is knowable only while the
+// blueprint runs.
+
+Deno.test("blueprintOutputs() records resolved addresses on the document", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "call a blueprint" });
+    const q = resource(Widget, "orders", { name: "orders" });
+    blueprintOutputs({ queue_url: q.id, queue_name: q.name });
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.blueprint_outputs, {
+    queue_url: "payments.fake_widget.orders.id",
+    queue_name: "payments.fake_widget.orders.name",
+  });
+});
+
+Deno.test("blueprintOutputs() is omitted, never empty, when never called", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "an ordinary program" });
+    resource(Widget, "primary", { name: "primary-widget" });
+  });
+
+  const doc = def.evaluate();
+  assertEquals("blueprint_outputs" in doc, false);
+});
+
+// A blueprint may legitimately return no value for a declared output.
+// Skipping it lets the caller report that as its own named error, where
+// it can say which output and which blueprint; an empty address here
+// would instead look resolved.
+Deno.test("blueprintOutputs() skips an undefined or null entry", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "one output came back empty" });
+    const q = resource(Widget, "orders", { name: "orders" });
+    blueprintOutputs({ queue_url: q.id, missing: undefined, alsoMissing: null });
+  });
+
+  const doc = def.evaluate();
+  assertEquals(doc.blueprint_outputs, {
+    queue_url: "payments.fake_widget.orders.id",
+  });
+});
+
+Deno.test("blueprintOutputs() merges across calls", () => {
+  const def = stack("payments", () => {
+    intent({ summary: "two blueprints" });
+    const q = resource(Widget, "orders", { name: "orders" });
+    blueprintOutputs({ first: q.id });
+    blueprintOutputs({ second: q.name });
+  });
+
+  const doc = def.evaluate();
+  assertEquals(Object.keys(doc.blueprint_outputs ?? {}).length, 2);
 });

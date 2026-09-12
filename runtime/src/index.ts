@@ -299,6 +299,11 @@ export interface IntentDocument {
     readonly address: string;
     readonly config: Record<string, unknown>;
   }>;
+  // blueprint_outputs is output name -> the resolved address that
+  // output's own Computed refers to (UBI-261). Omitted, never an empty
+  // object, for every program that never calls blueprintOutputs, which
+  // is every program except a blueprint caller.
+  readonly blueprint_outputs?: Readonly<Record<string, string>>;
 }
 
 // ---------------------------------------------------------------------
@@ -322,6 +327,11 @@ class Collector {
   private resources: IntentDocument["resources"][number][] = [];
   private dataSources: NonNullable<IntentDocument["data_sources"]>[number][] = [];
   private overrides: NonNullable<IntentDocument["overrides"]>[number][] = [];
+  private blueprintOutputs: Record<string, string> = {};
+
+  recordBlueprintOutput(name: string, address: string): void {
+    this.blueprintOutputs[name] = address;
+  }
   private seenAddresses = new Set<string>();
   private intentInfo: IntentDocument["intent"] | undefined;
   private intentCalled = false;
@@ -439,6 +449,9 @@ class Collector {
     }
     if (this.overrides.length > 0) {
       doc = { ...doc, overrides: this.overrides };
+    }
+    if (Object.keys(this.blueprintOutputs).length > 0) {
+      doc = { ...doc, blueprint_outputs: this.blueprintOutputs };
     }
     return doc;
   }
@@ -582,6 +595,34 @@ function currentBlueprintSource(binding: ResourceBinding<unknown, unknown>): str
  * reasoning blueprint.lock.json's own hash-exclusion already
  * establishes). Called only by generated blueprint code, never meant to
  * be called by a stack author's own code directly. */
+/** blueprintOutputs records what a called blueprint returned, so the
+ * caller of that blueprint can reference its outputs (UBI-261).
+ *
+ * This exists because the address a blueprint's output refers to is
+ * knowable only while the blueprint RUNS. An Ubxfile declared each
+ * output as a literal "<resource-slug>.<attribute>" pair, which could
+ * be read without running anything; a blueprint that is code returns a
+ * Computed, and which attribute of which resource that points at can
+ * depend on the blueprint's own branching. So it is reported from
+ * inside the evaluation rather than derived from outside it.
+ *
+ * Called by the synthesized caller program ubx writes to invoke a
+ * blueprint, never by a person. An undefined or null entry is skipped
+ * rather than recorded as an empty address: a blueprint may
+ * legitimately return no value for a declared output, and the caller
+ * reports that as its own named error, where it can say which output
+ * and which blueprint. Calling it twice merges, last write winning per
+ * key. */
+export function blueprintOutputs(
+  outputs: Record<string, Computed<unknown> | undefined | null>,
+): void {
+  const collector = requireCollector("blueprintOutputs");
+  for (const [name, value] of Object.entries(outputs)) {
+    if (value === undefined || value === null) continue;
+    collector.recordBlueprintOutput(name, addressOf(value));
+  }
+}
+
 export function pushBlueprintSource(name: string): void {
   blueprintSourceStack.push(name);
 }
